@@ -8,7 +8,7 @@ half-PPR, superflex). Two tiers: a **static** pre-season draft reference, and a
 
 | Tier | Files | What it does |
 |---|---|---|
-| Static (frozen pre-season) | `BKN FFB 2026 Draft Guide.html`, `2026 1QB Draft Board (Pick 5).html` | Self-contained draft-day tools with rankings baked in as of early September 2026. Never regenerated — a snapshot of the board on draft day. |
+| Static (frozen pre-season) | `BKN FFB 2026 Draft Guide.html` | Self-contained draft-day tool with rankings baked in as of early September 2026. Never regenerated — a snapshot of the board on draft day. |
 | Live (all season) | `build_board_data.py` → `bundle.json` → `ffb_engine.py` / `BKN FFB 2026 Command Center.html` | Re-fetches and re-blends rankings from live sources every time you run it. This is what you use week-to-week. |
 
 The static files are plain HTML with the data embedded in a `<script>` tag —
@@ -90,5 +90,5 @@ not secrets.
 - `bundle.json` — generated output, gitignored (regenerate any time)
 - `espn_winrates_2025.json` — cached ESPN team win-rate snapshot (see above)
 - `secrets.example.json` — template for the optional PFF token; copy to `secrets.local.json`
-- `BKN FFB 2026 Draft Guide.html`, `2026 1QB Draft Board (Pick 5).html` — static pre-season draft tools
+- `BKN FFB 2026 Draft Guide.html` — static pre-season draft tool
 - `BKN FFB 2026 Command Center.html` — live in-browser dashboard (fed by `bundle.json`)
