@@ -1,0 +1,7 @@
+secrets.local.json
+bundle.json
+.DS_Store
+.idea/
+__pycache__/
+*.pyc
+Claude outputs/
