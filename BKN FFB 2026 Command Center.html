@@ -61,6 +61,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .slot.FLEX,.slot.SF{color:var(--gold);border-color:#4a412a}
 .pname{font-weight:600} .meta{color:var(--dim);font-size:12px}
 .tier{display:inline-block;padding:0 6px;border-radius:5px;font-size:11px;background:var(--panel2);border:1px solid var(--line);color:var(--dim)}
+tr.tiergrp td{background:var(--panel2);font-weight:700;font-size:12px;letter-spacing:.4px;text-transform:uppercase;color:var(--dim);padding:6px 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 .bye{color:var(--warn);font-weight:600;font-size:11px}
 .tag{display:inline-block;padding:1px 6px;border-radius:5px;font-size:10.5px;font-weight:700;letter-spacing:.3px}
 .tag.start{background:rgba(126,203,90,.16);color:var(--good)}
@@ -142,7 +143,7 @@ details summary{cursor:pointer;color:var(--dim)} details[open] summary{color:var
       <div class="tab" data-v="matchups">Matchups</div>
       <div class="tab" data-v="power">Power Rankings</div>
       <div class="tab" data-v="standings">Projected Standings</div>
-      <div class="tab" data-v="board">Boone Board</div>
+      <div class="tab" data-v="board">Board</div>
     </div>
 
     <section class="view active" id="v-myteam"></section>
@@ -305,7 +306,7 @@ const SLOT_LABEL = {QB:'QB',RB:'RB',WR:'WR',TE:'TE',FLEX:'FLEX',SF:'SFLX',DEF:'D
 
 let STATE = {
   leagueId: B.CFG.leagueId, league:null, users:[], rosters:[], matchups:{}, // week->entries
-  teams:[], ridTeam:{}, myRid:null, week:1, curWeek:1, boardSort:{k:'ov',dir:1}, boardPos:'ALL', boardSearch:'',
+  teams:[], ridTeam:{}, myRid:null, week:1, curWeek:1, boardSort:{k:'tier',dir:1}, boardPos:'ALL', boardSearch:'',
   ownerByPid:{}, powerCache:null, mc:null, share:false
 };
 
@@ -629,7 +630,7 @@ function monteCarlo(weekProj){
 function renderBoard(){
   const v=$('#v-board'); v.innerHTML='';
   const head=el('div','card');
-  head.innerHTML='<h2>Boone board</h2><div class="note">Justin Boone’s top-240 (superflex) + D/ST. Filter by position, search, or click a column to sort. “Rostered by” shows league ownership.</div>';
+  head.innerHTML='<h2>Board</h2><div class="note">Blended top-240 (superflex) + D/ST, grouped by tier within each position. Filter by position, search, or click a column to sort. “Rostered by” shows league ownership.</div>';
   const row=el('div','searchrow');
   ['ALL','QB','RB','WR','TE','DEF'].forEach(p=>{
     const pill=el('span','pill'+(STATE.boardPos===p?' active':''),p); pill.onclick=()=>{STATE.boardPos=p;renderBoard();}; row.appendChild(pill);
@@ -657,12 +658,27 @@ function renderBoardTable(){
   if(STATE.boardPos!=='ALL') rows=rows.filter(r=>r.p===STATE.boardPos);
   if(STATE.boardSearch.trim()){ const q=STATE.boardSearch.toLowerCase(); rows=rows.filter(r=>r.n.toLowerCase().includes(q)); }
   const s=STATE.boardSort;
-  rows.sort((a,b)=>{ let x=a[s.k],y=b[s.k]; if(x==null)x=1e9; if(y==null)y=1e9; if(x<y)return -s.dir; if(x>y)return s.dir; return 0;});
-  const cols=[['ov','Boone','num'],['pr','Pos#','num'],['n','Player',''],['p','Pos',''],['t','Tm',''],['tier','Tier','num'],['bye','Bye','num'],['ecr','ECR','num'],['owner','Rostered by','']];
+  rows.sort((a,b)=>{
+    let x=a[s.k],y=b[s.k]; if(x==null)x=1e9; if(y==null)y=1e9;
+    if(x<y)return -s.dir; if(x>y)return s.dir;
+    // tiebreak: within the same value (e.g. same tier), fall back to position rank
+    let px=a.pr, py=b.pr; if(px==null)px=1e9; if(py==null)py=1e9;
+    return px-py;
+  });
+  const cols=[['ov','Ov','num'],['pr','Pos#','num'],['n','Player',''],['p','Pos',''],['t','Tm',''],['tier','Tier','num'],['bye','Bye','num'],['ecr','ECR','num'],['owner','Rostered by','']];
   const tb=el('table');
   tb.innerHTML='<thead><tr>'+cols.map(cc=>'<th class="'+(cc[2]==='num'?'num ':'')+'sortable" data-k="'+cc[0]+'">'+cc[1]+(s.k===cc[0]?(s.dir>0?' ▲':' ▼'):'')+'</th>').join('')+'</tr></thead>';
   const body=el('tbody');
+  const groupByTier = s.k==='tier';   // only draw tier-cutoff dividers when the board is actually tier-sorted
+  let lastTier;
   rows.slice(0,300).forEach(r=>{
+    if(groupByTier && r.tier!==lastTier){
+      lastTier=r.tier;
+      const label = r.tier!=null ? ('Tier '+r.tier) : 'Unranked';
+      const count = rows.filter(x=>x.tier===r.tier).length;
+      body.appendChild(el('tr','tiergrp',
+        '<td colspan="'+cols.length+'">'+label+' <span class="meta">· '+count+'</span></td>'));
+    }
     const mine=r.owner===STATE.ridTeam[STATE.myRid].name;
     body.appendChild(el('tr',null,
       '<td class="num rankcell">'+(r.ov>=900?'—':r.ov)+'</td>'+
