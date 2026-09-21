@@ -7,7 +7,12 @@ INPUTS
                           for charted WRs; PFF grades + ESPN O-line win rates carried
                           through as reference context, same inputs the Draft Board
                           uses), D/ST, Sleeper id->player map, NFL schedule, league config
-    api.sleeper.app       live rosters + weekly matchups (public, no auth)
+    api.sleeper.app       live rosters + weekly matchups + in-game live scoring
+                          (players_points) + NFL game status by team, all public,
+                          no auth. Once a player's game has kicked off this week,
+                          their real accumulating/final Sleeper score is used in
+                          place of the projection (see week_points/fetch_live_scores/
+                          fetch_game_status) — projections only apply pre-kickoff.
 
 """
 
@@ -133,7 +138,18 @@ def resolve_player(pid, B, idx):
          "bye":(b and b["bye"]),"matched":bool(b)}
     o["base"] = base_points(o); return o
 
-def week_points(pl, week, SCHED, ignore_bye=False):
+def week_points(pl, week, SCHED, ignore_bye=False, live_scores=None, game_status=None):
+    """Projected points for one player in one week — UNLESS that player's game has
+    already kicked off, in which case their real accumulating (or final) Sleeper
+    score is used instead of the projection. live_scores: {player_id: actual pts
+    scored so far this week}. game_status: {team_abbr: Sleeper game status for this
+    week, e.g. "pre_game"/"in_game"/"complete"} — only "pre_game" still trusts the
+    projection; any other status means the game is live or over, so the real score
+    is more informative than a static pre-game number."""
+    if live_scores is not None and pl["id"] in live_scores:
+        status = (game_status or {}).get(pl["t"])
+        if status and status != "pre_game":
+            return round(live_scores[pl["id"]], 2)
     if not ignore_bye and pl.get("bye") == week:   # on bye -> 0 (optimizer will bench them)
         return 0.0
     base = pl["base"]; tilt = 1.0
@@ -145,6 +161,36 @@ def week_points(pl, week, SCHED, ignore_bye=False):
             tilt = max(0.90, min(1.12, 1 + ((g["tot"]/LEAGUE_AVG_TOTAL)-1)*0.35))
     return round(base*tilt, 2)
 
+def is_live_score(pl, week, live_scores, game_status):
+    """True if week_points() would use pl's real score rather than a projection —
+    used purely for display (e.g. tagging a lineup row LIVE/FINAL vs projected)."""
+    if not live_scores or pl["id"] not in live_scores:
+        return False
+    status = (game_status or {}).get(pl["t"])
+    return bool(status) and status != "pre_game"
+
+def fetch_live_scores(lid, week):
+    """Actual points scored so far this week per player, straight from Sleeper's
+    matchups endpoint (players_points updates in near-real-time during games)."""
+    m = get_json(API + "league/" + lid + "/matchups/" + str(week))
+    out = {}
+    for e in m:
+        out.update(e.get("players_points") or {})
+    return out
+
+def fetch_game_status(season, week):
+    """{team_abbr: status} for one week — status is e.g. "pre_game", "in_game", or
+    "complete". Used to decide whether a player's real score should be trusted yet
+    (a 0.0 in live_scores is ambiguous: it could mean "hasn't played" or "played and
+    scored zero" — game_status disambiguates)."""
+    games = get_json(f"https://api.sleeper.app/schedule/nfl/regular/{season}")
+    out = {}
+    for g in games:
+        if g.get("week") == week:
+            out[g["home"]] = g["status"]
+            out[g["away"]] = g["status"]
+    return out
+
 
 # =============================================================================
 # SECTION 4 — OPTIMAL LINEUP
@@ -154,10 +200,12 @@ def week_points(pl, week, SCHED, ignore_bye=False):
 # guaranteed optimal — greedy can misfire when a QB belongs in the superflex).
 # ignore_bye=True gives "roster strength" (used for power rankings).
 # =============================================================================
-def optimize(players, week, SCHED, ignore_bye=False):
+def optimize(players, week, SCHED, ignore_bye=False, live_scores=None, game_status=None):
     pool = []
     for p in players:
-        q = dict(p); q["proj"] = p["base"] if ignore_bye else week_points(p, week, SCHED)
+        q = dict(p)
+        q["proj"] = p["base"] if ignore_bye else week_points(p, week, SCHED, live_scores=live_scores, game_status=game_status)
+        q["live"] = (not ignore_bye) and is_live_score(p, week, live_scores, game_status)
         pool.append(q)
     used = set()
     def take(pos):                          # grab the best unused player at a position
@@ -198,6 +246,14 @@ def phi(z):  # normal CDF (Abramowitz-Stegun approximation), matches engine.js
 
 def win_prob(margin): return phi(margin/MARGIN_SD)
 
+# DEF contributes only this fraction of its raw projected points toward roster
+# "power" — DEF week-to-week output is far more matchup noise than skill-position
+# talent, so it shouldn't swing power rankings as much as a full-weight slot would.
+DEF_POWER_WEIGHT = 0.35
+def power_total(lineup, total):
+    def_pts = next((p["proj"] for slot, p in lineup if slot == "DEF" and p), 0.0)
+    return round(total - def_pts * (1 - DEF_POWER_WEIGHT), 2)
+
 
 # =============================================================================
 # SECTION 6 — LEAGUE ASSEMBLY
@@ -217,7 +273,7 @@ def load_league(B):
         teams[r["roster_id"]] = {
             "rid":r["roster_id"], "owner":r["owner_id"],
             "name":tn.get(r["owner_id"], f"Team {r['roster_id']}"), "players":players,
-            "power":optimize(players,1,B["SCHED"],ignore_bye=True)[1],   # roster strength
+            "power":power_total(*optimize(players,1,B["SCHED"],ignore_bye=True)),   # roster strength, D/ST down-weighted
         }
     # weekly matchups: Sleeper lists two rows sharing a matchup_id -> pair them
     matchups = {}
@@ -236,13 +292,13 @@ def load_league(B):
 # For one week: each pairing's projected optimal-lineup scores and the favorite's
 # win probability. Your game is sorted first and marked with '*'.
 # =============================================================================
-def week_matchups(teams, matchups, SCHED, cfg, week):
+def week_matchups(teams, matchups, SCHED, cfg, week, live_scores=None, game_status=None):
     ridname = {r: t["name"] for r,t in teams.items()}
     my = next((t["rid"] for t in teams.values() if t["owner"]==cfg["myUserId"]), None)
     rows = []
     for a,b in matchups.get(week, []):
-        pa = optimize(teams[a]["players"], week, SCHED)[1]   # team A optimal total
-        pb = optimize(teams[b]["players"], week, SCHED)[1]   # team B optimal total
+        pa = optimize(teams[a]["players"], week, SCHED, live_scores=live_scores, game_status=game_status)[1]   # team A optimal total
+        pb = optimize(teams[b]["players"], week, SCHED, live_scores=live_scores, game_status=game_status)[1]   # team B optimal total
         wpa = win_prob(pa-pb)
         rows.append((a,b,pa,pb,wpa, my in (a,b)))
     rows.sort(key=lambda r:(not r[5], -(r[2]+r[3])))         # my game first, then biggest totals
@@ -324,18 +380,30 @@ def main():
         cur = 1
     week = a.week or max(1, min(cur, cfg["regWeeks"]))
 
+    # --- live scores for the target week, if any games have kicked off ---
+    try:
+        live_scores = fetch_live_scores(cfg["leagueId"], week)
+        game_status = fetch_game_status(cfg["season"], week)
+        live_ct = sum(1 for t,s in game_status.items() if s != "pre_game")
+        if live_ct:
+            print(f"Live scoring: {live_ct} teams' games underway/final for week {week} — using real scores where available.")
+    except Exception as e:
+        live_scores, game_status = {}, {}
+        print(f"(live scores unavailable: {e})")
+
     # --- your optimal lineup for the target week ---
     mine = next((t for t in teams.values() if t["owner"]==cfg["myUserId"]), None)
     if mine:
-        lineup,total = optimize(mine["players"], week, SCHED)
+        lineup,total = optimize(mine["players"], week, SCHED, live_scores=live_scores, game_status=game_status)
         print(f"\n=== {mine['name']} — Week {week} optimal lineup ===")
         for slot,p in lineup:
+            tag = " [LIVE/FINAL]" if p and p.get("live") else ""
             print(f"  {slot:5} {(p['n']+' ('+p['p']+'-'+(p['t'] or '')+')') if p else '—':32} "
-                  f"{p['proj'] if p else 0:5}")
+                  f"{p['proj'] if p else 0:5}{tag}")
         print(f"  TOTAL {total}")
 
     # --- this week's matchups + win probabilities ---
-    week_matchups(teams, matchups, SCHED, cfg, week)
+    week_matchups(teams, matchups, SCHED, cfg, week, live_scores=live_scores, game_status=game_status)
 
     # --- power rankings (roster strength, bye-free) ---
     print("\n=== POWER RANKINGS ===")
