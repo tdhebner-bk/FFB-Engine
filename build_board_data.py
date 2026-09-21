@@ -3,14 +3,17 @@
 build_board_data.py  —  rebuild the data bundle for the FFB tools, LIVE all season.
 
 What it does:
-  1. Pulls three public, no-login ranking feeds and blends them into a per-
-     position rank the same way the Draft Board does:
-       - Primary analyst (Yahoo)     50%  — partners.fantasypros.com, expert id 317
-       - FantasyPros consensus ECR   30%  — fantasypros.com/nfl/rankings (146 experts,
-                                             superflex half-PPR)
-       - The Athletic                20%  — partners.fantasypros.com, expert id 3701
-                                             (the same public widget The Athletic
-                                             itself embeds on its rankings page)
+  1. Pulls three ranking feeds and blends them into a per-position rank the
+     same way the Draft Board does:
+       - Primary analyst (Yahoo)     50%  — sports.yahoo.com/api/fanPro, expert
+                                             id 317, fetched directly from Yahoo
+       - FantasyPros consensus ECR   30%  — fantasypros.com/nfl/rankings (146
+                                             experts, superflex half-PPR; the
+                                             WEEKLY page once the season starts,
+                                             the draft/cheatsheet page before it)
+       - The Athletic                20%  — partners.fantasypros.com, expert id
+                                             3701 (the same public widget The
+                                             Athletic embeds on its own site)
      Weighted average of each source's POSITIONAL rank -> re-sorted into a new
      positional rank ("pr"). If a player is missing from one source the other
      weights renormalize to fill the gap. The Draft Board also folds in a 10%
@@ -20,6 +23,16 @@ What it does:
      within one spot ~86% of the time.
      D/ST uses the board's own simpler blend: a straight average of the primary
      analyst's D/ST rank and FantasyPros' D/ST consensus ECR (no Athletic input).
+
+     IMPORTANT — why primary analyst moved off the FantasyPros partner API:
+     that endpoint (still used for Athletic) only mirrors an expert's PRESEASON
+     DRAFT board and stops getting refreshed once the season starts — confirmed
+     stuck on its Sept-9 snapshot for BOTH experts even weeks into the season,
+     while Boone's own Yahoo board kept moving with real results. So primary
+     analyst now goes straight to Yahoo, which stays genuinely live. Athletic
+     still comes through the FantasyPros mirror and is automatically dropped
+     from the blend (renormalizing to primary+ECR) whenever it's stale — see
+     is_stale() — rather than silently blending outdated numbers in-season.
   2. Optionally pulls PFF player grades (2025 REG season) and ESPN O-line win
      rates as REFERENCE fields — these were context in the original board, not
      blend weight, so they never affect "pr" or the projection curve:
@@ -50,6 +63,7 @@ Run it from this folder (it finds files next to itself).
 
 import json, re, os, sys, gzip, unicodedata
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from urllib.request import urlopen, Request
 
 # ---------------------------------------------------------------- config
@@ -63,11 +77,14 @@ MY_USER_ID = "1392338811781926912"                              # thombus
 API    = "https://api.sleeper.app/v1/"
 
 SEASON      = 2026
-PRIMARY_ID  = 317    # primary analyst (50% weight) — FantasyPros expert id, Yahoo
+PRIMARY_ID  = 317    # primary analyst (50% weight) — Yahoo's own expert id for him
 ATHLETIC_ID = 3701   # The Athletic  (20% weight) — FantasyPros expert id
-FP_ECR_URL  = "https://www.fantasypros.com/nfl/rankings/superflex-cheatsheets.php"  # half-PPR superflex, 146 experts
-FP_DST_URL  = "https://www.fantasypros.com/nfl/rankings/dst.php"
+FP_ECR_DRAFT_URL  = "https://www.fantasypros.com/nfl/rankings/superflex-cheatsheets.php"      # pre-season only
+FP_ECR_WEEKLY_URL = "https://www.fantasypros.com/nfl/rankings/half-point-ppr-superflex.php"   # live all season
+FP_DST_URL  = "https://www.fantasypros.com/nfl/rankings/dst.php"   # already a live weekly page year-round
 PARTNER_API = "https://partners.fantasypros.com/api/v1/expert-rankings.php"
+YAHOO_API   = "https://sports.yahoo.com/api/fanPro/"
+STALE_DAYS  = 10     # a source's self-reported "published" date older than this -> drop it from the blend
 PFF_SEASON  = 2025    # most recent completed season — PFF grades feed 2026 preseason evaluation
 UA = {"User-Agent": "Mozilla/5.0 (compatible; ffb-engine/1.0; personal use)"}
 
@@ -130,49 +147,106 @@ def pos_rank_int(pos_rank):
 def to_int_bye(v):
     return int(v) if str(v or "").strip().isdigit() else None
 
+def is_stale(published, max_days=STALE_DAYS):
+    """True if a source's self-reported publish date is older than max_days.
+    Used to drop a source that has stopped updating (e.g. a synced board that
+    only refreshes pre-draft, which is exactly what happened to every expert
+    we tried on the FantasyPros partner API once the season started) instead
+    of silently blending in outdated numbers."""
+    if not published:
+        return True
+    try:
+        pub = datetime.strptime(published[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except Exception:
+        return False   # can't parse -> don't assume stale
+    return (datetime.now(timezone.utc) - pub).days > max_days
+
 # ---------------------------------------------------------------- 1a) FantasyPros consensus ECR (public, no login)
 def fetch_consensus_ecr(url):
-    """Scrape the ecrData blob FantasyPros embeds server-side on its public rankings pages."""
+    """Scrape the ecrData blob FantasyPros embeds server-side on its public rankings
+    pages. Keyed by (normalized name, position) so it joins cleanly against the
+    other two sources regardless of which platform they came from."""
     html = fetch_text(url)
     data = extract_braces(html, "var ecrData = ")
     if not data:
         sys.exit(f"ERROR: could not find ecrData on {url}")
     out = {}
     for p in data["players"]:
-        out[p["player_id"]] = {
-            "n": p["player_name"], "t": p.get("player_team_id"),
-            "p": p.get("player_position_id") or p.get("player_positions"),
+        pos = p.get("player_position_id") or p.get("player_positions")
+        out[(norm(p["player_name"]), pos)] = {
+            "n": p["player_name"], "t": p.get("player_team_id"), "p": pos,
             "bye": p.get("player_bye_week"),
             "pr": pos_rank_int(p.get("pos_rank")),
             "ov": p.get("rank_ecr"),
         }
     return out
 
-# ---------------------------------------------------------------- 1b) individual expert feed (public partner API)
+# ---------------------------------------------------------------- 1b) Yahoo — primary analyst's own live board
+def fetch_yahoo_expert(expert_id, position):
+    """An expert's board straight from Yahoo, their native publishing platform.
+    Unlike the FantasyPros partner mirror (fetch_expert, below), this stays
+    genuinely live all season — confirmed by diffing snapshots taken days apart
+    and seeing real rank movement that tracked actual results. Yahoo doesn't
+    expose a positional rank directly, so for skill players we derive one by
+    grouping on position and re-ordering by Yahoo's overall rank."""
+    url = (f"{YAHOO_API}?sport=NFL&position={position}&filters={expert_id}&experts=show"
+           f"&expert={expert_id}&scoring=HALF&type=ST&week=0&wtype=PRESEASON&year={SEASON}")
+    data = json.loads(fetch_text(url))
+    players = data.get("players") or []
+    if not players:
+        return {}, None
+    src = f"Yahoo, live (last updated {data.get('lastUpdated')})"
+    if position == "DST":
+        out = {p["team"]: {"n": p["name"], "pr": p["rank"], "bye": p.get("byeWeek")}
+               for p in players if p.get("team")}
+        return out, src
+    byPos = defaultdict(list)
+    for p in players:
+        pos = p.get("position")
+        if pos in ("QB", "RB", "WR", "TE"):
+            byPos[pos].append(p)
+    out = {}
+    for pos, plist in byPos.items():
+        plist.sort(key=lambda x: x["rank"])
+        for i, p in enumerate(plist, 1):
+            out[(norm(p["name"]), pos)] = {
+                "n": p["name"], "t": p.get("team"), "p": pos,
+                "bye": p.get("byeWeek"), "pr": i,
+            }
+    return out, src
+
+# ---------------------------------------------------------------- 1c) FantasyPros partner API (Athletic only)
 def fetch_expert(expert_id, position, cur_week):
     """One expert's rankings via FantasyPros' public partner-widget API (the same
-    endpoint Yahoo's and The Athletic's own rankings pages embed). Tries
-    rest-of-season first once the season is underway; falls back to the
-    preseason/draft board (the only type valid at week 0) otherwise."""
+    endpoint The Athletic's own rankings page embeds). Tries rest-of-season
+    first once the season is underway, falling back to the preseason/draft
+    board. If nothing found is fresh (is_stale), returns empty rather than
+    blending in a board that stopped updating."""
     attempts = ([(cur_week, "ROS")] if cur_week and cur_week >= 1 else []) + [(0, "PRESEASON")]
+    stale_seen = None
     for wk, kind in attempts:
         url = (f"{PARTNER_API}?callback=FPW.cb&position={position}&sport=NFL"
                f"&year={SEASON}&week={wk}&id={expert_id}&scoring=HALF&type={kind}")
         raw = fetch_text(url)
         m = re.search(r"FPW\.cb\((.*)\);?\s*$", raw.strip(), re.S)
         data = json.loads(m.group(1)) if m else {}
-        if data.get("count"):
-            src = f"{data.get('expert_name','?')} ({kind}, wk{wk}, published {data.get('published')})"
-            out = {}
-            for p in data["players"]:
-                out[p["player_id"]] = {
-                    "n": p["player_name"], "t": p.get("player_team_id"),
-                    "p": p.get("player_positions"),
-                    "bye": p.get("bye_week"),
-                    "pr": pos_rank_int(p.get("pos_rank")),
-                }
-            return out, src
-    return {}, None
+        if not data.get("count"):
+            continue
+        if is_stale(data.get("published")):
+            stale_seen = data.get("published")
+            continue
+        src = f"{data.get('expert_name','?')} ({kind}, wk{wk}, published {data.get('published')})"
+        out = {}
+        for p in data["players"]:
+            pos = p.get("player_positions")
+            out[(norm(p["player_name"]), pos)] = {
+                "n": p["player_name"], "t": p.get("player_team_id"), "p": pos,
+                "bye": p.get("bye_week"), "pr": pos_rank_int(p.get("pos_rank")),
+            }
+        return out, src
+    if stale_seen:
+        return {}, f"stale (last published {stale_seen}, >{ STALE_DAYS }d old — excluded from blend)"
+    return {}, "no data available"
 
 # ---------------------------------------------------------------- 1c) PFF grades (optional, needs your own session)
 def fetch_pff_grades(secrets):
@@ -273,20 +347,21 @@ def blend_dst(primary_dst, ecr_dst):
 # ================================================================== run
 secrets = load_secrets()
 
-print("Fetching live rankings (FantasyPros consensus ECR, primary analyst, Athletic) ...")
-ecr_skill    = fetch_consensus_ecr(FP_ECR_URL)
-ecr_dst_raw  = fetch_consensus_ecr(FP_DST_URL)
-ecr_dst      = {v["t"]: v for v in ecr_dst_raw.values()}
-print(f"  FantasyPros consensus ECR: {len(ecr_skill)} skill players, {len(ecr_dst)} D/ST")
-
 try:
     cur_week = int(get_json(API + "state/nfl").get("display_week") or 0)
 except Exception:
     cur_week = 0
 
-primary_skill, primary_src       = fetch_expert(PRIMARY_ID, "ALL", cur_week)
-primary_dst_raw, primary_dst_src = fetch_expert(PRIMARY_ID, "DST", cur_week)
-primary_dst  = {v["t"]: v for v in primary_dst_raw.values()}
+print("Fetching live rankings (FantasyPros consensus ECR, primary analyst, Athletic) ...")
+ecr_url    = FP_ECR_WEEKLY_URL if cur_week >= 1 else FP_ECR_DRAFT_URL
+ecr_skill  = fetch_consensus_ecr(ecr_url)
+ecr_dst_raw = fetch_consensus_ecr(FP_DST_URL)
+ecr_dst    = {v["t"]: v for v in ecr_dst_raw.values()}
+print(f"  FantasyPros consensus ECR ({'weekly wk'+str(cur_week) if cur_week>=1 else 'draft'}): "
+      f"{len(ecr_skill)} skill players, {len(ecr_dst)} D/ST")
+
+primary_skill, primary_src = fetch_yahoo_expert(PRIMARY_ID, "ALL")
+primary_dst, primary_dst_src = fetch_yahoo_expert(PRIMARY_ID, "DST")
 print(f"  Primary analyst: {len(primary_skill)} skill players from {primary_src}")
 print(f"  Primary analyst D/ST: {len(primary_dst)} teams from {primary_dst_src}")
 
