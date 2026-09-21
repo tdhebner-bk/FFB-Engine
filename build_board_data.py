@@ -285,6 +285,46 @@ def load_espn_winrates():
     print(f"  ESPN: {len(data.get('teams', {}))} team win rates (cached snapshot, {data.get('fetched')})")
     return data.get("teams", {})
 
+# ---------------------------------------------------------------- tiers (derived from point-value cliffs)
+# Same positional-rank -> points curve as ffb_engine.py / engine.js — used here only to
+# find where projected value actually drops off, the same way analysts draw tier lines.
+# Keep in sync with CURVE in ffb_engine.py if either changes.
+CURVE = {
+    "QB": [[1,23.5],[3,22],[6,20.5],[9,19],[12,18],[16,16.5],[20,15],[24,14],[28,12.5],[32,11.5],[40,10]],
+    "RB": [[1,19.5],[3,17.5],[6,15.5],[9,14],[12,13],[18,11.5],[24,10],[30,9],[36,8],[45,7],[60,6],[80,5]],
+    "WR": [[1,18.5],[3,16.5],[6,15],[9,13.5],[12,12.5],[18,11],[24,10],[30,9],[36,8],[45,7],[60,6],[80,5]],
+    "TE": [[1,14],[2,12.5],[3,11.5],[5,10],[8,8.5],[12,7.5],[16,6.5],[20,6],[26,5],[32,4.5],[40,4]],
+}
+
+def interp(anchors, x):
+    if x is None: return None
+    if x <= anchors[0][0]: return anchors[0][1]
+    if x >= anchors[-1][0]: return anchors[-1][1]
+    for (x0, y0), (x1, y1) in zip(anchors, anchors[1:]):
+        if x0 <= x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return anchors[-1][1]
+
+def assign_tiers(players_sorted_by_pr, curve, gap_frac=0.08, min_gap=0.3, max_bucket=18):
+    """Walk a position's players in rank order and start a new tier whenever
+    either: (a) the projected points gap to the previous player is a real
+    cliff, or (b) too many ranks have passed without one. (b) matters because
+    the points curve is flat past its top anchor (e.g. RB80+) — without a cap,
+    everyone below that rank would land in one giant tail tier. Bucket size
+    grows with depth (finer tiers up top, coarser deep in the player pool),
+    capped at max_bucket."""
+    tier, prev_pts, run = 1, None, 0
+    for p in players_sorted_by_pr:
+        pts = interp(curve, p["pr"])
+        cliff = prev_pts is not None and (prev_pts - pts) > max(min_gap, prev_pts * gap_frac)
+        bucket_cap = min(max_bucket, 3 + p["pr"] // 4)
+        if cliff or run >= bucket_cap:
+            tier += 1
+            run = 0
+        p["tier"] = tier
+        prev_pts = pts
+        run += 1
+
 # ---------------------------------------------------------------- 2) blend skill players
 def blend_skill(primary_map, ecr_map, athletic_map):
     """Weighted average of each source's POSITIONAL rank (primary 50 / ECR 30 /
@@ -320,7 +360,8 @@ def blend_skill(primary_map, ecr_map, athletic_map):
         players.sort(key=lambda p: p["score"])
         for i, p in enumerate(players, 1):
             p["pr"] = i
-            out.append(p)
+        assign_tiers(players, CURVE[pos])
+        out.extend(players)
     return out
 
 def blend_dst(primary_dst, ecr_dst):
@@ -375,7 +416,7 @@ espn_winrate = load_espn_winrates()
 blended = blend_skill(primary_skill, ecr_skill, athletic_skill)
 BOARD = [{
     "n": p["n"], "t": p["t"], "p": p["p"], "bye": p["bye"],
-    "tier": None,
+    "tier": p["tier"],          # derived from point-value cliffs (see assign_tiers), not a source field
     "ov": p["ov"],              # FantasyPros consensus superflex overall rank (reference)
     "pr": p["pr"],               # BLENDED positional rank -> drives the projection curve
     "ecr": p["ecr"],             # FantasyPros ECR positional rank (reference)
