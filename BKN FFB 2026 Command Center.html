@@ -108,7 +108,7 @@ details summary{cursor:pointer;color:var(--dim)} details[open] summary{color:var
   <header class="top">
     <div class="brand">
       <h1>BKN FFB — Command Center</h1>
-      <div class="sub"><b id="lgName">BKN FFB</b> · <span id="lgScore">Half-PPR · Superflex</span> · Boone-driven projections
+      <div class="sub"><b id="lgName">BKN FFB</b> · <span id="lgScore">Half-PPR · Superflex</span> · Analyst-blended projections
         · <span id="stateWk">2026</span></div>
     </div>
     <div class="controls">
@@ -134,7 +134,7 @@ details summary{cursor:pointer;color:var(--dim)} details[open] summary{color:var
 
   <div id="boot" class="loading-screen">
     <div class="spinner"></div>
-    <div>Connecting to your Sleeper league &amp; loading Boone projections…</div>
+    <div>Connecting to your Sleeper league &amp; loading projections…</div>
   </div>
 
   <div id="app" style="display:none">
@@ -158,12 +158,12 @@ details summary{cursor:pointer;color:var(--dim)} details[open] summary{color:var
   <div class="foot" id="foot"></div>
 </div>
 
-<script>/* ================= BKN FFB — Boone Projection Engine =================
+<script>/* ================= BKN FFB — Projection Engine =================
    Pure functions, no DOM. Reused verbatim in the browser app + node test. */
 (function(root){
 'use strict';
 
-// Boone positional-rank -> half-PPR-per-game points curves (superflex env)
+// Blended positional-rank -> half-PPR-per-game points curves (superflex env)
 const CURVE = {
   QB:[[1,23.5],[3,22],[6,20.5],[9,19],[12,18],[16,16.5],[20,15],[24,14],[28,12.5],[32,11.5],[40,10]],
   RB:[[1,19.5],[3,17.5],[6,15.5],[9,14],[12,13],[18,11.5],[24,10],[30,9],[36,8],[45,7],[60,6],[80,5]],
@@ -203,7 +203,7 @@ function basePoints(pl){
   if(pl.p==='DEF'){ return pl.rk!=null? interp(CURVE.DEF, pl.rk) : REPL.DEF; }
   const c = CURVE[pl.p];
   if(!c) return REPL[pl.p]||4;
-  if(pl.pr==null) return REPL[pl.p]||4;   // matched Boone but no pos rank -> replacement
+  if(pl.pr==null) return REPL[pl.p]||4;   // matched but no pos rank -> replacement
   return interp(c, pl.pr);
 }
 
@@ -447,12 +447,12 @@ function renderMyTeam(){
 
   // starters table
   const c1=el('div','card');
-  c1.innerHTML='<h3>Optimal starting lineup (Boone projection)</h3>';
+  c1.innerHTML='<h3>Optimal starting lineup</h3>';
   const tb=el('table'); tb.innerHTML='<thead><tr><th>Slot</th><th>Player</th><th>Pos</th><th class="num">Proj</th><th>Notes</th></tr></thead>';
   const body=el('tbody');
   opt.lineup.forEach(x=>{
     const p=x.player; const tr=el('tr');
-    let note=''; if(p){ if(p.live)note+='<span class="tag mine">LIVE/FINAL</span> '; if(p.tier)note+='<span class="tier">T'+p.tier+'</span> '; if(p.primary)note+='<span class="meta">Boone #'+p.primary+'</span>'; if(!p.matched&&p.p!=='DEF')note='<span class="meta">deep/replacement</span>'; }
+    let note=''; if(p){ if(p.live)note+='<span class="tag mine">LIVE/FINAL</span> '; if(p.tier)note+='<span class="tier">T'+p.tier+'</span> '; if(p.primary)note+='<span class="meta">Primary #'+p.primary+'</span>'; if(!p.matched&&p.p!=='DEF')note='<span class="meta">deep/replacement</span>'; }
     tr.innerHTML='<td><span class="slot '+x.slot+'">'+SLOT_LABEL[x.slot]+'</span></td>'+
       '<td>'+playerCell(p)+'</td>'+'<td>'+(p?posBadge(p.p):'')+'</td>'+
       '<td class="num">'+(p?p.proj.toFixed(1):'—')+'</td>'+'<td>'+note+'</td>';
@@ -492,7 +492,7 @@ function renderMyTeam(){
     bb.appendChild(el('tr',null,'<td>'+playerCell(p)+'</td><td>'+posBadge(p.p)+'</td><td class="num">'+p.proj.toFixed(1)+'</td><td>'+sig+'</td>'));
   });
   bt.appendChild(bb); c2.appendChild(bt);
-  c2.appendChild(el('div','note',null)).textContent='Projections come from Justin Boone’s positional ranks mapped to half-PPR/superflex points; players on bye project 0. Vegas game totals (weeks 1–4) apply a small environment tilt.';
+  c2.appendChild(el('div','note',null)).textContent='Projections come from blended analyst positional ranks mapped to half-PPR/superflex points; players on bye project 0. Vegas game totals (weeks 1–4) apply a small environment tilt.';
   v.appendChild(c2);
 }
 function flexClass(pos){ return pos==='QB'?'SF':(['RB','WR','TE'].includes(pos)?'FLEX':pos); }
@@ -518,7 +518,7 @@ function powerRank(rid){
 
 function renderMatchups(){
   const w=+STATE.week; const v=$('#v-matchups'); v.innerHTML='';
-  const head=el('div','card'); head.innerHTML='<h2>Week '+w+' matchups</h2><div class="note">Projected scores from optimal Boone lineups. Your matchup is highlighted.</div>';
+  const head=el('div','card'); head.innerHTML='<h2>Week '+w+' matchups</h2><div class="note">Projected scores from optimal lineups. Your matchup is highlighted.</div>';
   v.appendChild(head);
   const grid=el('div','grid2');
   const pairs=weekMatchups(w).map(([a,b])=>{
@@ -546,7 +546,7 @@ function renderMatchups(){
 function renderPower(){
   const v=$('#v-power'); v.innerHTML='';
   const rows=STATE.teams.slice().sort((a,b)=>b.power-a.power);
-  const head=el('div','card'); head.innerHTML='<h2>Power rankings</h2><div class="note">Season roster strength = optimal Boone lineup ignoring byes, with D/ST down-weighted to '+Math.round(E.DEF_POWER_WEIGHT*100)+'% of its raw points (streamable and matchup-noisy — shouldn’t swing roster power the way a skill-position talent gap does). Each positional bar is scaled across the whole league — a full bar is the league’s best at that spot, an empty one the weakest. Rank badges (#1–12) show where the team sits at each position.</div>';
+  const head=el('div','card'); head.innerHTML='<h2>Power rankings</h2><div class="note">Season roster strength = optimal lineup ignoring byes, with D/ST down-weighted to '+Math.round(E.DEF_POWER_WEIGHT*100)+'% of its raw points (streamable and matchup-noisy — shouldn’t swing roster power the way a skill-position talent gap does). Each positional bar is scaled across the whole league — a full bar is the league’s best at that spot, an empty one the weakest. Rank badges (#1–12) show where the team sits at each position.</div>';
   v.appendChild(head);
   const POS=['QB','RB','WR','TE','DEF'];
   // compute positional strength for every team, then league min/max + rank per position
@@ -614,7 +614,7 @@ function renderStandings(){
   const proj=projectStandings();
   const head=el('div','card');
   head.innerHTML='<h2>Projected final standings</h2><div class="note">Expected wins across weeks 1–'+B.CFG.regWeeks+
-    ' from weekly Boone projections + win probabilities. Playoff odds via 4,000-season Monte Carlo. Top '+B.CFG.playoffTeams+' make playoffs.</div>';
+    ' from weekly projections + win probabilities. Playoff odds via 4,000-season Monte Carlo. Top '+B.CFG.playoffTeams+' make playoffs.</div>';
   v.appendChild(head);
   const c=el('div','card');
   const tb=el('table'); tb.innerHTML='<thead><tr><th class="num">Seed</th><th>Team</th><th class="num">Proj. Record</th><th class="num">Exp. Wins</th><th class="num">Playoff %</th><th class="num">Title %</th><th>Odds</th></tr></thead>';
@@ -718,7 +718,7 @@ function renderBoardTable(){
     let px=a.pr, py=b.pr; if(px==null)px=1e9; if(py==null)py=1e9;
     return px-py;
   });
-  const cols=[['ov','Ov','num'],['pr','Pos#','num'],['n','Player',''],['p','Pos',''],['t','Tm',''],['tier','Tier','num'],['bye','Bye','num'],['primary','Boone','num'],['ecr','ECR','num'],['owner','Rostered by','']];
+  const cols=[['ov','Ov','num'],['pr','Pos#','num'],['n','Player',''],['p','Pos',''],['t','Tm',''],['tier','Tier','num'],['bye','Bye','num'],['primary','Primary','num'],['ecr','ECR','num'],['owner','Rostered by','']];
   const tb=el('table');
   tb.innerHTML='<thead><tr>'+cols.map(cc=>'<th class="'+(cc[2]==='num'?'num ':'')+'sortable" data-k="'+cc[0]+'">'+cc[1]+(s.k===cc[0]?(s.dir>0?' ▲':' ▼'):'')+'</th>').join('')+'</tr></thead>';
   const body=el('tbody');
@@ -752,7 +752,7 @@ function renderBoardTable(){
   });
 }
 
-/* ---------- dashboard (FantasyCalc-style league overview, Boone-powered) ---------- */
+/* ---------- dashboard (FantasyCalc-style league overview) ---------- */
 function freeAgents(){ return boardData().filter(r=>!r.owner); }
 function waiverTargets(pos,n){
   return freeAgents().filter(r=>r.p===pos && r.pr!=null).sort((a,b)=>a.pr-b.pr).slice(0,n||5);
@@ -895,8 +895,7 @@ function renderDashboard(){
     if(expanded) pc.appendChild(renderTeamDetailCard(t,wk));
   });
   const leg=el('div','legend');
-  leg.innerHTML=SKILL.map(pp=>'<span><span class="sw" style="background:var(--'+pp.toLowerCase()+')"></span>'+pp+'</span>').join('')+
-    '<span style="margin-left:6px;color:var(--dim)">Segment width = share of power at that position · bar length = value relative to the league\'s low-high range · number = total</span>';
+  leg.innerHTML=SKILL.map(pp=>'<span><span class="sw" style="background:var(--'+pp.toLowerCase()+')"></span>'+pp+'</span>').join('');
   pc.appendChild(leg);
   v.appendChild(pc);
 
@@ -923,9 +922,9 @@ function renderDashboard(){
   });
   stb.appendChild(sbody); sc.appendChild(stb); v.appendChild(sc);
 
-  // ---- Waiver wire (top free agents by position, Boone blended rank) ----
+  // ---- Waiver wire (top free agents by position, blended rank) ----
   const wc=el('div','card');
-  wc.innerHTML='<h3>Waiver Wire</h3><div class="note">Best available free agents by position — ranked by blended Boone/ECR/Athletic positional rank, valued at our projection curve\'s points/game.</div>';
+  wc.innerHTML='<h3>Waiver Wire</h3>';
   const wgrid=el('div'); wgrid.style.cssText='display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:10px';
   SKILL.forEach(pp=>{
     const col=el('div');
@@ -942,7 +941,7 @@ function renderDashboard(){
 
   // ---- Top bench players (rostered, not this week's optimal starter) ----
   const bc=el('div','card');
-  bc.innerHTML='<h3>Top Bench Players</h3><div class="note">Highest-projected rostered players currently sitting outside the optimal Week '+STATE.week+' lineup.</div>';
+  bc.innerHTML='<h3>Top Bench Players</h3>';
   const bgrid=el('div'); bgrid.style.cssText='display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:10px';
   SKILL.forEach(pp=>{
     const col=el('div');
@@ -961,8 +960,8 @@ function renderDashboard(){
 function renderAll(){
   renderDashboard(); renderMyTeam(); renderMatchups(); renderPower(); renderStandings(); renderBoard();
   $('#lgScore').textContent=B.CFG.scoring;
-  $('#foot').innerHTML='Live data: Sleeper API · League '+STATE.leagueId+' · Projections: Justin Boone positional ranks → half-PPR/superflex points model. '+
-    'Boone ranks are preseason/ROS as of the draft guide; paste weekly updates to refresh. Not affiliated with Sleeper or The Athletic.';
+  $('#foot').innerHTML='Live data: Sleeper API · League '+STATE.leagueId+' · Projections: blended analyst positional ranks → half-PPR/superflex points model. '+
+    'Ranks are preseason/ROS as of the draft guide; paste weekly updates to refresh. Not affiliated with Sleeper or The Athletic.';
 }
 function showView(name){
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.v===name));
