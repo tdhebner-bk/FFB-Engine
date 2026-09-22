@@ -788,18 +788,6 @@ function ensureTooltip(){
   }
   return TOOLTIP;
 }
-function tooltipBody(t,week){
-  const opt=teamLineupForScope(t,week);
-  const rows=opt.lineup.filter(x=>x.player).map(x=>
-    '<div style="display:flex;justify-content:space-between;gap:12px;padding:1px 0">'+
-      '<span><span class="meta" style="min-width:34px;display:inline-block">'+SLOT_LABEL[x.slot]+'</span>'+x.player.n+'</span>'+
-      '<span style="font-variant-numeric:tabular-nums">'+x.player.proj.toFixed(1)+'</span></div>').join('');
-  return '<div style="font-weight:700;margin-bottom:5px">'+t.name+'</div>'+rows+
-    '<div style="border-top:1px solid var(--line);margin-top:5px;padding-top:5px;display:flex;justify-content:space-between;font-weight:700">'+
-      '<span>Power total</span><span>'+E.powerTotal(opt).toFixed(1)+'</span></div>'+
-    '<div class="meta" style="margin-top:3px">click team to expand full roster</div>';
-}
-function showTooltip(e,t,week){ const tip=ensureTooltip(); tip.innerHTML=tooltipBody(t,week); tip.style.display='block'; moveTooltip(e); }
 function moveTooltip(e){
   const tip=ensureTooltip(); if(tip.style.display==='none') return;
   tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+14)+'px';
@@ -810,6 +798,38 @@ function moveTooltip(e){
   });
 }
 function hideTooltip(){ if(TOOLTIP) TOOLTIP.style.display='none'; }
+
+// segment hover: just the players at ONE position on this team, plus where they
+// sit in the league's blended positional rank (±10 spots either side)
+function segTooltipBody(t,pos,week){
+  const need={QB:1,RB:2,WR:3,TE:1,DEF:1};
+  let ls,gs; if(week){ ls=liveScoresForWeek(week); gs=gameStatusForWeek(week); }
+  const arr=t.players.filter(p=>p.p===pos)
+    .map(p=>({p,val:week?E.weekPoints(p,week,B.SCHED,ls,gs).pts:p.base}))
+    .sort((a,b)=>b.val-a.val).slice(0,need[pos]);
+  let html='<div style="font-weight:700;margin-bottom:5px">'+t.name+' · '+pos+'</div>';
+  html += arr.length ? arr.map(x=>
+    '<div style="display:flex;justify-content:space-between;gap:12px;padding:1px 0">'+
+      '<span>'+x.p.n+'</span><span style="font-variant-numeric:tabular-nums">'+x.val.toFixed(1)+'</span></div>').join('')
+    : '<div class="meta">none rostered</div>';
+  const anchor=arr[0]&&arr[0].p;
+  if(anchor){
+    const list=boardData().filter(r=>r.p===pos&&r.pr!=null).sort((a,b)=>a.pr-b.pr);
+    const idx=list.findIndex(r=>IDX.norm(r.n)===IDX.norm(anchor.n));
+    if(idx>=0){
+      const lo=Math.max(0,idx-10), hi=Math.min(list.length-1,idx+10);
+      html+='<div class="meta" style="border-top:1px solid var(--line);margin-top:6px;padding-top:6px">Nearby '+pos+' ranks</div>';
+      for(let i=lo;i<=hi;i++){
+        const r=list[i], isAnchor=i===idx;
+        html+='<div style="display:flex;justify-content:space-between;gap:10px;font-size:11px;'+
+          (isAnchor?'font-weight:700;color:var(--acc)':'color:var(--dim)')+'">'+
+          '<span>'+pos+r.pr+' '+r.n+'</span><span>'+(r.owner||'FA')+'</span></div>';
+      }
+    }
+  }
+  return html;
+}
+function showSegTooltip(e,t,pos,week){ const tip=ensureTooltip(); tip.innerHTML=segTooltipBody(t,pos,week); tip.style.display='block'; moveTooltip(e); }
 
 /* ---------- click-to-expand: full roster + scores behind a team's power number ---------- */
 function renderTeamDetailCard(t,week){
@@ -873,19 +893,31 @@ function renderDashboard(){
     const track=el('div'); track.style.cssText='flex:1;height:20px';
     const barWrap=el('div'); const frac=(val[t.rid]-minV)/span; const pct=FLOOR+frac*(100-FLOOR);
     barWrap.style.cssText='width:'+pct.toFixed(1)+'%;height:100%;border-radius:5px;overflow:hidden;display:flex;background:var(--panel2)';
+    const segEls=[];
     SKILL.forEach(pp=>{
       const f=ps[t.rid][pp]/skillSum;
       const seg=el('div');
-      seg.style.cssText='width:'+(f*100).toFixed(1)+'%;height:100%;background:var(--'+pp.toLowerCase()+')';
+      seg.style.cssText='width:'+(f*100).toFixed(1)+'%;height:100%;background:var(--'+pp.toLowerCase()+');'+
+        'transition:opacity .1s,filter .1s';
       barWrap.appendChild(seg);
+      segEls.push(seg);
+      seg.onmouseenter=e=>{
+        e.stopPropagation();
+        segEls.forEach(s=>{ s.style.opacity = s===seg ? '1' : '.25'; });
+        seg.style.filter='brightness(1.25)';
+        showSegTooltip(e,t,pp,wk);
+      };
+      seg.onmousemove=e=>{ e.stopPropagation(); moveTooltip(e); };
+      seg.onmouseleave=e=>{
+        e.stopPropagation();
+        segEls.forEach(s=>{ s.style.opacity=''; s.style.filter=''; });
+        hideTooltip();
+      };
     });
     track.appendChild(barWrap);
     const num=el('div'); num.style.cssText='min-width:52px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700';
     num.textContent=val[t.rid].toFixed(0);
     row.appendChild(label); row.appendChild(track); row.appendChild(num);
-    row.onmouseenter=e=>showTooltip(e,t,wk);
-    row.onmousemove=moveTooltip;
-    row.onmouseleave=hideTooltip;
     row.onclick=()=>{
       hideTooltip();
       if(expanded) STATE.dashExpanded.delete(t.rid); else STATE.dashExpanded.add(t.rid);
