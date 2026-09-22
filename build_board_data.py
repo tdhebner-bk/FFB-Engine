@@ -39,10 +39,19 @@ What it does:
        - PFF: needs your own premium.pff.com session (paywalled). Reads
          secrets.local.json's "pff_token" (the X-PFF-Token request header —
          see README for how to grab it). Skipped gracefully if absent/expired.
-       - ESPN: their analytics article sits behind bot-detection that blocks
-         plain scripts entirely (not a login wall — cookies don't help). Reads
-         a locally cached snapshot (espn_winrates_2025.json) instead; refresh
-         that file by asking Claude to re-browse the source URL in it.
+       - ESPN O-line win rates: their analytics article sits behind bot-detection
+         that blocks plain scripts entirely (not a login wall — cookies don't
+         help). Reads a locally cached snapshot (espn_winrates_2025.json)
+         instead; refresh that file by asking Claude to re-browse the source
+         URL in it.
+       - ESPN projected points: a genuine POINTS model (not a rank), pulled
+         live from ESPN's public fantasy player API, no login required. Tried
+         FantasyPros' own projections first (same publisher as the ECR input)
+         but that product only serves ~10 teaser rows per position publicly
+         and gates the rest behind a paid MVP subscription; Yahoo's API (used
+         for the primary analyst) has no points field at all. ESPN's own
+         default scoring (close to PPR) doesn't exactly match this league's
+         half-PPR/superflex settings, so it's reference-only, same as PFF.
   3. Reads the 2026 NFL schedule + Vegas game-total tilt from the STATIC Draft
      Guide's embedded DATA blob — this file is a frozen pre-season snapshot and
      is only ever read here, never regenerated (the schedule itself doesn't
@@ -285,6 +294,58 @@ def load_espn_winrates():
     print(f"  ESPN: {len(data.get('teams', {}))} team win rates (cached snapshot, {data.get('fetched')})")
     return data.get("teams", {})
 
+# ---------------------------------------------------------------- 3) ESPN projected points (public, no login)
+# A genuine POINTS model (not a rank), as opposed to the primary/ECR/Athletic
+# inputs above which are all expert-ranked ORDER. Reference only — never
+# affects "pr" or the projection curve; shown alongside for comparison.
+# We tried FantasyPros' own projections (fantasypros.com/nfl/projections/*.php)
+# first since it's the same publisher as the ECR input, but that product only
+# server-renders ~10 teaser rows per position for anonymous users and gates the
+# rest behind a paid MVP subscription — not scriptable without a login, same
+# situation as PFF. Yahoo's fanPro API (used for the primary analyst) only
+# exposes rank, no points field at all. ESPN's public league-defaults player
+# API does expose a real projected-points model with no auth required, so
+# that's the one that made it in.
+ESPN_PLAYER_API = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leaguedefaults/3"
+ESPN_POS = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 16: "DST"}
+
+def fetch_espn_projected_points():
+    """{(norm_name, pos): season-long projected points/game} from ESPN's public
+    (no-login) fantasy player API — statSourceId 1 = ESPN's own projection
+    model, scoringPeriodId 0 = full-season. ESPN's own default scoring (close
+    to PPR, not this league's exact half-PPR/superflex settings) — a reference
+    number, not blend-compatible with the half-PPR curve without rescaling."""
+    filt = {"players": {"limit": 3000,
+        "filterStatsForTopScoringPeriodIds": {"value": 3, "additionalValue": ["002026", "102026", "002025"]},
+        "sortDraftRanks": {"sortPriority": 1, "sortAsc": True, "value": "STANDARD"}}}
+    url = ESPN_PLAYER_API.format(season=SEASON) + "?view=kona_player_info"
+    try:
+        raw = fetch_text(url, extra_headers={"Accept": "application/json", "x-fantasy-filter": json.dumps(filt)})
+        data = json.loads(raw)
+    except Exception as e:
+        print(f"  ESPN projected points unavailable ({e}) — skipping (reference field only)")
+        return {}
+    out = {}
+    for pl in data.get("players", []):
+        p = pl.get("player") or {}
+        pos = ESPN_POS.get(p.get("defaultPositionId"))
+        if pos not in ("QB", "RB", "WR", "TE", "DST"):
+            continue
+        avg = None
+        for s in p.get("stats") or []:
+            if s.get("statSourceId") == 1 and s.get("scoringPeriodId") == 0 and s.get("seasonId") == SEASON:
+                avg = s.get("appliedAverage")
+                break
+        if avg is None:
+            continue
+        name = p.get("fullName") or ""
+        if pos == "DST":
+            name = re.sub(r"\s*D/ST\s*$", "", name)   # "Eagles D/ST" -> "Eagles" (nickname only)
+        out[(norm(name), pos)] = round(avg, 2)
+    if out:
+        print(f"  ESPN: {len(out)} players with a projected-points model (season avg, ESPN's own scoring)")
+    return out
+
 # ---------------------------------------------------------------- tiers (derived from point-value cliffs)
 # Same positional-rank -> points curve as ffb_engine.py / engine.js — used here only to
 # find where projected value actually drops off, the same way analysts draw tier lines.
@@ -413,6 +474,9 @@ print("Fetching PFF grades + ESPN O-line win rates (reference fields) ...")
 pff_grades   = fetch_pff_grades(secrets)
 espn_winrate = load_espn_winrates()
 
+print("Fetching ESPN projected points (reference field — an actual points model, not a rank) ...")
+espn_proj = fetch_espn_projected_points()
+
 blended = blend_skill(primary_skill, ecr_skill, athletic_skill)
 BOARD = [{
     "n": p["n"], "t": p["t"], "p": p["p"], "bye": p["bye"],
@@ -424,9 +488,12 @@ BOARD = [{
     "athletic": p["athletic"],   # The Athletic positional rank (reference)
     "pff": pff_grades.get(norm(p["n"])),          # PFF offensive grade, reference only
     "espn": espn_winrate.get(p["t"]),              # {pbwr, rbwr, ...} team win rates, reference only
+    "espnProj": espn_proj.get((norm(p["n"]), p["p"])),   # ESPN season-long projected pts/gm, reference only
     "d": None,
 } for p in blended]
 print(f"  Blended board: {len(BOARD)} players  {dict(Counter(p['p'] for p in BOARD))}")
+espn_proj_matched = sum(1 for p in BOARD if p["espnProj"] is not None)
+print(f"  ESPN projection matched: {espn_proj_matched}/{len(BOARD)} board players")
 
 dst_blended = blend_dst(primary_dst, ecr_dst)
 DST = [{
@@ -436,6 +503,7 @@ DST = [{
     "rk": d["rk"],       # BLENDED D/ST rank -> drives the curve
     "bye": d["bye"],
     "espn": espn_winrate.get(d["t"]),
+    "espnProj": espn_proj.get((norm(d["n"].split()[-1]), "DST")),  # match by nickname, e.g. "Eagles"
 } for d in dst_blended]
 print(f"  D/ST: {len(DST)} teams")
 
