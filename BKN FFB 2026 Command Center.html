@@ -42,6 +42,29 @@ button.primary:hover{filter:brightness(1.06)}
 .card h2{margin:0 0 4px;font-size:16px} .card h3{margin:0 0 10px;font-size:14px;color:var(--dim);font-weight:600}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 @media(max-width:840px){.grid2{grid-template-columns:1fr}}
+.pr-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;cursor:pointer;border-radius:6px;padding:2px 4px;margin-left:-4px}
+.pr-row.expanded{background:rgba(91,156,240,.06)}
+.pr-label{min-width:170px;font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pr-label.mine{color:var(--acc)}
+.pr-track{flex:1;height:20px}
+.pr-num{min-width:52px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
+.dash-grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:10px}
+@media(max-width:700px){
+  .wrap{padding:12px 10px 40px}
+  header.top{gap:10px}
+  .brand h1{font-size:17px}
+  .controls{width:100%;margin-left:0;justify-content:flex-start}
+  .tabs{gap:2px}
+  .tab{padding:8px 10px;font-size:13px}
+  table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .dash-grid4{grid-template-columns:repeat(2,1fr)}
+  .pr-label{min-width:96px;font-size:11px}
+}
+@media(max-width:420px){
+  .dash-grid4{grid-template-columns:1fr}
+  .pr-label{min-width:74px;font-size:10.5px}
+  .pr-num{min-width:38px;font-size:12px}
+}
 .kpis{display:flex;flex-wrap:wrap;gap:10px;margin:2px 0 10px}
 .kpi{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 14px;min-width:120px}
 .kpi .lab{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px}
@@ -135,6 +158,10 @@ details summary{cursor:pointer;color:var(--dim)} details[open] summary{color:var
   <div id="boot" class="loading-screen">
     <div class="spinner"></div>
     <div>Connecting to your Sleeper league &amp; loading projections…</div>
+    <div id="bootSlow" class="note" style="display:none;margin-top:14px">
+      Still working — this is taking longer than usual. Could be a slow connection.
+      <div style="margin-top:10px"><button id="bootRetry">↻ Retry</button></div>
+    </div>
   </div>
 
   <div id="app" style="display:none">
@@ -321,6 +348,7 @@ const E = window.FFENGINE;
 const B = BUNDLE;
 const IDX = E.buildIndex(B);
 const $ = s => document.querySelector(s);
+const BOOT_HTML = document.getElementById('boot').innerHTML;   // pristine copy, restored on every loadAll() so a retry looks like the first attempt
 const el = (t,c,h)=>{const e=document.createElement(t); if(c)e.className=c; if(h!=null)e.innerHTML=h; return e;};
 const POS_ORDER = {QB:0,RB:1,WR:2,TE:3,FLEX:4,SF:5,DEF:6,K:7};
 const SLOT_LABEL = {QB:'QB',RB:'RB',WR:'WR',TE:'TE',FLEX:'FLEX',SF:'SFLX',DEF:'D/ST'};
@@ -332,10 +360,23 @@ let STATE = {
 };
 
 /* ---------- data fetch ---------- */
-const api = p => fetch('https://api.sleeper.app/v1/'+p).then(r=>{ if(!r.ok) throw new Error('HTTP '+r.status+' on '+p); return r.json(); });
+// plain fetch() never times out on a stalled connection (common on flaky mobile
+// networks) — it just hangs forever with no reject, which reads as an infinite
+// spinner with no error. AbortController forces a rejection after TIMEOUT_MS so
+// loadAll()'s catch block can actually show something instead of spinning dead.
+const TIMEOUT_MS = 12000;
+function fetchTimeout(url, opts){
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), TIMEOUT_MS);
+  return fetch(url, Object.assign({}, opts, {signal: ctrl.signal})).finally(()=>clearTimeout(t));
+}
+const api = p => fetchTimeout('https://api.sleeper.app/v1/'+p).then(r=>{ if(!r.ok) throw new Error('HTTP '+r.status+' on '+p); return r.json(); });
 function setStatus(cls,txt){ $('#dot').className='dot '+cls; $('#statusTxt').textContent=txt; }
 
 async function loadAll(lid){
+  $('#boot').innerHTML = BOOT_HTML;
+  const bootRetryBtn = $('#bootRetry'); if(bootRetryBtn) bootRetryBtn.onclick=()=>loadAll(lid);
+  const slowTimer = setTimeout(()=>{ const s=$('#bootSlow'); if(s) s.style.display='block'; }, 6000);
   setStatus('load','Connecting…'); $('#boot').style.display='block'; $('#app').style.display='none';
   try{
     const st = await api('state/nfl').catch(()=>({week:1}));
@@ -353,7 +394,7 @@ async function loadAll(lid){
     // whether a 0.0 in players_points means "hasn't played" or "played and scored 0"
     STATE.gameStatusByWeek = {};
     try{
-      const games = await fetch('https://api.sleeper.app/schedule/nfl/regular/'+B.CFG.season).then(r=>r.json());
+      const games = await fetchTimeout('https://api.sleeper.app/schedule/nfl/regular/'+B.CFG.season).then(r=>r.json());
       games.forEach(g=>{
         if(g.week==null) return;
         const m = STATE.gameStatusByWeek[g.week] = STATE.gameStatusByWeek[g.week]||{};
@@ -366,10 +407,16 @@ async function loadAll(lid){
     $('#boot').style.display='none'; $('#app').style.display='block';
     renderAll();
   }catch(err){
+    const timedOut = err && err.name==='AbortError';
     setStatus('err','Connection failed');
     $('#boot').innerHTML = '<div class="err-box">Could not load league <b>'+lid+'</b>.<br>'+
-      (String(err.message||err))+'<br><br>Check the league ID (⚙ button) and that you\'re online. '+
-      'The Sleeper API must be reachable from your browser.</div>';
+      (timedOut ? 'Timed out waiting on the Sleeper API — the connection stalled instead of failing outright.' : String(err.message||err))+
+      '<br><br>Check the league ID (⚙ button) and that you\'re online. '+
+      'The Sleeper API must be reachable from your browser.<br><br>'+
+      '<button id="bootRetry2" class="primary">↻ Retry</button></div>';
+    const b2=$('#bootRetry2'); if(b2) b2.onclick=()=>loadAll(lid);
+  }finally{
+    clearTimeout(slowTimer);
   }
 }
 
@@ -886,11 +933,10 @@ function renderDashboard(){
     const mine=t.rid===STATE.myRid && !STATE.share;
     const expanded=STATE.dashExpanded.has(t.rid);
     const skillSum=SKILL.reduce((s,pp)=>s+ps[t.rid][pp],0)||1;
-    const row=el('div'); row.style.cssText='display:flex;align-items:center;gap:10px;margin-bottom:8px;cursor:pointer;'+
-      'border-radius:6px;padding:2px 4px;margin-left:-4px'+(expanded?';background:rgba(91,156,240,.06)':'');
-    const label=el('div'); label.style.cssText='min-width:170px;font-size:12.5px;font-weight:600'+(mine?';color:var(--acc)':'');
+    const row=el('div','pr-row'+(expanded?' expanded':''));
+    const label=el('div','pr-label'+(mine?' mine':''));
     label.innerHTML='<span class="meta" style="display:inline-block;width:12px">'+(expanded?'▾':'▸')+'</span>'+t.name+(mine?' <span class="tag mine">YOU</span>':'');
-    const track=el('div'); track.style.cssText='flex:1;height:20px';
+    const track=el('div','pr-track');
     const barWrap=el('div'); const frac=(val[t.rid]-minV)/span; const pct=FLOOR+frac*(100-FLOOR);
     barWrap.style.cssText='width:'+pct.toFixed(1)+'%;height:100%;border-radius:5px;overflow:hidden;display:flex;background:var(--panel2)';
     const segEls=[];
@@ -915,7 +961,7 @@ function renderDashboard(){
       };
     });
     track.appendChild(barWrap);
-    const num=el('div'); num.style.cssText='min-width:52px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700';
+    const num=el('div','pr-num');
     num.textContent=val[t.rid].toFixed(0);
     row.appendChild(label); row.appendChild(track); row.appendChild(num);
     row.onclick=()=>{
@@ -957,7 +1003,7 @@ function renderDashboard(){
   // ---- Waiver wire (top free agents by position, blended rank) ----
   const wc=el('div','card');
   wc.innerHTML='<h3>Waiver Wire</h3>';
-  const wgrid=el('div'); wgrid.style.cssText='display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:10px';
+  const wgrid=el('div','dash-grid4');
   SKILL.forEach(pp=>{
     const col=el('div');
     col.innerHTML='<h3 style="margin-bottom:6px">'+posBadge(pp)+'</h3>';
@@ -974,7 +1020,7 @@ function renderDashboard(){
   // ---- Top bench players (rostered, not this week's optimal starter) ----
   const bc=el('div','card');
   bc.innerHTML='<h3>Top Bench Players</h3>';
-  const bgrid=el('div'); bgrid.style.cssText='display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:10px';
+  const bgrid=el('div','dash-grid4');
   SKILL.forEach(pp=>{
     const col=el('div');
     col.innerHTML='<h3 style="margin-bottom:6px">'+posBadge(pp)+'</h3>';
