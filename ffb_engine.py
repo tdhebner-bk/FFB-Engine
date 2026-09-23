@@ -314,32 +314,56 @@ def week_matchups(teams, matchups, SCHED, cfg, week, live_scores=None, game_stat
 # =============================================================================
 # SECTION 8 — SEASON PROJECTIONS
 # expected_wins(): deterministic — sum each week's win probability. This is the
-#   "projected record" (e.g. 8.6-5.4), NOT a simulation.
+#   "projected record" (e.g. 8.6-5.4), NOT a simulation. Weeks already played
+#   count as the real W/L (see fetch_results).
 # monte_carlo(): the simulation — replay the real schedule N times, adding a
 #   random gaussian shock to each team's weekly projection, then tally how often
-#   each team makes the top-6 (playoff%) and wins it all (title%).
+#   each team makes the top-6 (playoff%) and wins it all (title%). Weeks already
+#   played are locked to their real scores, so a 2-0 start actually counts.
 # =============================================================================
-def expected_wins(teams, matchups, SCHED):
+def fetch_results(lid, through_week):
+    """Final scores for every completed week: {week: {roster_id: points}}.
+    Feed this to expected_wins()/monte_carlo() so games already played count as
+    the real result instead of being re-simulated from projections."""
+    out = {}
+    for w in range(1, through_week+1):
+        pts = {e["roster_id"]: e.get("points") or 0.0
+               for e in get_json(API+"league/"+lid+"/matchups/"+str(w))}
+        if any(pts.values()): out[w] = pts
+    return out
+
+def expected_wins(teams, matchups, SCHED, results=None):
+    results = results or {}
     ew = {r:0.0 for r in teams}
     for w, pairs in matchups.items():
+        if w in results:                    # already played -> real W/L
+            for a,b in pairs:
+                if results[w][a] >= results[w][b]: ew[a]+=1
+                else:                              ew[b]+=1
+            continue
         proj = {r: optimize(teams[r]["players"], w, SCHED)[1] for r in teams}
         for a,b in pairs:
             p = win_prob(proj[a]-proj[b]); ew[a]+=p; ew[b]+=(1-p)
     return ew
 
-def monte_carlo(teams, matchups, SCHED, cfg, N):
-    rids = list(teams)
-    # precompute every team's projected total for every week once (byes included)
+def monte_carlo(teams, matchups, SCHED, cfg, N, results=None):
+    """results: {week: {roster_id: final points}} from fetch_results() — those
+    weeks are locked to what actually happened; only future weeks are simulated."""
+    rids = list(teams); results = results or {}
+    # precompute every team's projected total for every future week once (byes included)
     week_proj = {w: {rid: optimize(teams[rid]["players"], w, SCHED)[1] for rid in rids}
-                 for w in matchups}
+                 for w in matchups if w not in results}
     SD = MARGIN_SD/math.sqrt(2)             # per-team weekly noise (~21 pts)
     playoff = {r:0 for r in rids}; title = {r:0 for r in rids}
     for _ in range(N):                      # one simulated season per iteration
         wins = {r:0 for r in rids}; pf = {r:0.0 for r in rids}
         for w, pairs in matchups.items():
             for a,b in pairs:
-                sa = week_proj[w][a] + random.gauss(0,SD)   # projection + random swing
-                sb = week_proj[w][b] + random.gauss(0,SD)
+                if w in results:                             # played -> real score, no noise
+                    sa, sb = results[w][a], results[w][b]
+                else:
+                    sa = week_proj[w][a] + random.gauss(0,SD)   # projection + random swing
+                    sb = week_proj[w][b] + random.gauss(0,SD)
                 pf[a]+=sa; pf[b]+=sb                         # accumulate points-for (tiebreaker)
                 if sa>=sb: wins[a]+=1
                 else:      wins[b]+=1
@@ -412,8 +436,12 @@ def main():
 
     # --- projected final standings via Monte Carlo ---
     print(f"\n=== PROJECTED STANDINGS (Monte Carlo, {a.sims} seasons) ===")
-    ew = expected_wins(teams, matchups, SCHED)
-    po, ti = monte_carlo(teams, matchups, SCHED, cfg, a.sims)
+    try:
+        results = fetch_results(cfg["leagueId"], max(0, cur-1))   # completed weeks count as played
+    except Exception:
+        results = {}
+    ew = expected_wins(teams, matchups, SCHED, results)
+    po, ti = monte_carlo(teams, matchups, SCHED, cfg, a.sims, results)
     rows = sorted(teams.values(), key=lambda t:(-po[t["rid"]], -ew[t["rid"]]))
     reg = cfg["regWeeks"]
     print(f"{'#':>2}  {'Team':30} {'Rec':>9}  {'Playoff':>7}  {'Title':>6}")

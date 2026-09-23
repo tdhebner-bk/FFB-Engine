@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f4f3f0; --card: #ffffff; --border: #e3e2dd; --ink: #111110; --ink2: #52514e; --muted: #8a8984;
+    --accent: #2a78d6; --accent-ink: #ffffff; --you: #eef4fc; --good: #006300; --bad: #b42d2d; --line: #9a9994;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #111110; --card: #1c1c1b; --border: #2e2e2b; --ink: #f4f3f0; --ink2: #c3c2b7; --muted: #8a8984;
+      --accent: #3987e5; --accent-ink: #ffffff; --you: #1a2636; --good: #4cc24c; --bad: #e66767; --line: #5a5955;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 20px 16px 120px; }
+  h1 { font-size: 20px; margin: 0 0 2px; }
+  .sub { color: var(--ink2); margin: 0 0 4px; }
+  .note { color: var(--ink2); font-size: 13px; margin: 10px 0 14px; }
+  .notice { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-top: 16px; }
+  ol { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--border);
+       border-radius: 12px; padding: 8px 8px 8px 10px; margin-bottom: 6px; user-select: none; -webkit-user-select: none; }
+  li.you { background: var(--you); }
+  li.dragging { box-shadow: 0 8px 24px rgba(0,0,0,.18); border-color: var(--accent); position: relative; z-index: 2; }
+  li.playoff-cut { margin-bottom: 18px; position: relative; }
+  li.playoff-cut::after { content: "playoff line"; position: absolute; left: 0; right: 0; bottom: -15px;
+       font-size: 10px; color: var(--muted); text-align: right; border-top: 1px dashed var(--line); padding-top: 1px; }
+  .rank { width: 26px; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink2); }
+  .handle { touch-action: none; cursor: grab; padding: 10px 4px; color: var(--muted); font-size: 18px; line-height: 1; }
+  .handle:active { cursor: grabbing; }
+  img.logo, .logo.fallback { width: 38px; height: 38px; border-radius: 50%; flex: none; object-fit: cover; background: var(--border); }
+  .logo.fallback { display: grid; place-items: center; font-size: 13px; font-weight: 700; color: var(--ink2); }
+  .who { flex: 1; min-width: 0; }
+  .who b { display: block; }
+  .who .meta { display: block; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tag { font-size: 11px; font-weight: 600; color: var(--accent); margin-left: 6px; }
+  .moves { display: flex; flex-direction: column; gap: 2px; }
+  .moves button { width: 34px; height: 24px; border: 1px solid var(--border); background: var(--bg); color: var(--ink2);
+       border-radius: 6px; font-size: 11px; cursor: pointer; padding: 0; }
+  .moves button:disabled { opacity: .35; cursor: default; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--border);
+         padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); }
+  .bar-inner { max-width: 560px; margin: 0 auto; display: flex; align-items: center; gap: 12px; }
+  .status { flex: 1; font-size: 13px; color: var(--ink2); min-width: 0; }
+  .status .ok { color: var(--good); font-weight: 600; }
+  .status .err { color: var(--bad); font-weight: 600; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 10px; padding: 12px 18px;
+         font-size: 15px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+  button.primary:disabled { opacity: .5; cursor: default; }
+</style>
+</head>
+<body>
+<main>
+  <h1>BKN FFB Power Poll</h1>
+  <p class="sub" id="sub">Loading your ballot…</p>
+  <div id="content"></div>
+</main>
+<div class="bar" id="bar" hidden>
+  <div class="bar-inner">
+    <div class="status" id="status"></div>
+    <button class="primary" id="submit">Submit ballot</button>
+  </div>
+</div>
+
+<script>
+const TOKEN = <?= token ?>;
+const $ = id => document.getElementById(id);
+let state = null, dirty = false;
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+function showNotice(title, body) {
+  $('bar').hidden = true;
+  const box = el('div', 'notice');
+  box.appendChild(el('b', null, title));
+  if (body) box.appendChild(el('p', 'note', body));
+  $('content').replaceChildren(box);
+}
+
+function turnoutText(t) {
+  if (!t) return '';
+  let s = t.voted.length + ' of ' + t.total + ' ballots in';
+  if (t.missing.length && t.missing.length <= 6) s += ' · waiting on ' + t.missing.join(', ');
+  return s;
+}
+
+function setStatus(text, kind) {
+  const s = $('status');
+  s.replaceChildren();
+  if (kind) s.appendChild(el('span', kind, text)); else s.textContent = text;
+}
+
+function render(data) {
+  state = data;
+  if (data.error === 'bad_link') {
+    $('sub').textContent = '';
+    return showNotice("This link doesn't work.", 'Ask the commish for your personal ballot link.');
+  }
+  const w = data.window;
+  if (w.seasonOver) {
+    $('sub').textContent = 'Voting as ' + data.voter;
+    return showNotice("That's a wrap on this season's polls.", 'Thanks for voting.');
+  }
+  if (!w.open) {
+    $('sub').textContent = 'Voting as ' + data.voter;
+    return showNotice('Week ' + w.week + ' voting opens ' + w.opensLabel + '.',
+                      'It closes ' + w.closesLabel + '. Same link every week.');
+  }
+  $('sub').textContent = 'Week ' + w.week + ' ballot · voting as ' + data.voter + ' · closes ' + w.closesLabel;
+  const note = el('p', 'note', data.saved
+    ? 'Your saved ballot is loaded. Change it and resubmit any time before the deadline.'
+    : 'Drag teams by the ⋮⋮ handle (or use the arrows) from best to worst, then submit. Starts in current standings order.');
+  const list = el('ol');
+  list.id = 'list';
+  const byName = {};
+  data.teams.forEach(t => { byName[t.name] = t; });
+  const order = data.saved || data.teams.map(t => t.name);
+  order.forEach(name => list.appendChild(row(byName[name], name === data.voter)));
+  $('content').replaceChildren(note, list);
+  wireDrag(list);
+  renumber();
+  $('bar').hidden = false;
+  setStatus(data.saved ? 'Ballot saved. ' + turnoutText(data.turnout) : turnoutText(data.turnout));
+  dirty = false;
+}
+
+function row(t, isYou) {
+  const li = el('li', isYou ? 'you' : '');
+  li.dataset.name = t.name;
+  li.appendChild(el('span', 'rank'));
+  const h = el('span', 'handle', '⋮⋮');
+  h.setAttribute('aria-hidden', 'true');
+  li.appendChild(h);
+  if (t.logo) {
+    const img = el('img', 'logo');
+    img.src = t.logo; img.alt = '';
+    img.onerror = () => img.replaceWith(fallback(t.name));
+    li.appendChild(img);
+  } else li.appendChild(fallback(t.name));
+  const who = el('div', 'who');
+  const b = el('b', null, t.name);
+  if (isYou) b.appendChild(el('span', 'tag', 'you'));
+  who.appendChild(b);
+  who.appendChild(el('span', 'meta', t.record + (t.team ? ' · ' + t.team : '')));
+  li.appendChild(who);
+  const moves = el('div', 'moves');
+  const up = el('button', null, '▲'); up.type = 'button'; up.setAttribute('aria-label', 'Move ' + t.name + ' up');
+  const dn = el('button', null, '▼'); dn.type = 'button'; dn.setAttribute('aria-label', 'Move ' + t.name + ' down');
+  up.onclick = () => { if (li.previousElementSibling) { li.parentNode.insertBefore(li, li.previousElementSibling); changed(); up.focus(); } };
+  dn.onclick = () => { if (li.nextElementSibling) { li.parentNode.insertBefore(li.nextElementSibling, li); changed(); dn.focus(); } };
+  moves.append(up, dn);
+  li.appendChild(moves);
+  return li;
+}
+
+function fallback(name) {
+  return el('span', 'logo fallback', name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase());
+}
+
+function renumber() {
+  const items = [...$('list').children];
+  items.forEach((li, i) => {
+    li.querySelector('.rank').textContent = i + 1;
+    li.classList.toggle('playoff-cut', i === 5);
+    const [up, dn] = li.querySelectorAll('.moves button');
+    up.disabled = i === 0; dn.disabled = i === items.length - 1;
+  });
+}
+
+function changed() {
+  renumber();
+  dirty = true;
+  setStatus('Unsaved changes', 'err');
+}
+
+// Pointer-based drag (works with touch, unlike HTML5 drag-and-drop on iOS).
+function wireDrag(list) {
+  let drag = null;
+  list.addEventListener('pointerdown', e => {
+    const h = e.target.closest('.handle');
+    if (!h) return;
+    e.preventDefault();
+    drag = h.closest('li');
+    drag.classList.add('dragging');
+    h.setPointerCapture(e.pointerId);
+  });
+  list.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const y = e.clientY;
+    let before = null;
+    for (const it of list.children) {
+      if (it === drag) continue;
+      const r = it.getBoundingClientRect();
+      if (y < r.top + r.height / 2) { before = it; break; }
+    }
+    if (before !== drag.nextElementSibling) { list.insertBefore(drag, before); renumber(); }
+    if (y < 50) window.scrollBy(0, -10); else if (y > window.innerHeight - 110) window.scrollBy(0, 10);
+  });
+  const end = () => { if (drag) { drag.classList.remove('dragging'); drag = null; changed(); } };
+  list.addEventListener('pointerup', end);
+  list.addEventListener('pointercancel', end);
+}
+
+$('submit').onclick = () => {
+  const order = [...$('list').children].map(li => li.dataset.name);
+  $('submit').disabled = true;
+  setStatus('Saving…');
+  google.script.run
+    .withSuccessHandler(res => {
+      $('submit').disabled = false;
+      if (res.ok) {
+        dirty = false;
+        setStatus('✓ Saved. You can change it until ' + res.window.closesLabel + '. ' + turnoutText(res.turnout), 'ok');
+      } else if (res.error === 'closed') {
+        render(Object.assign({}, state, { window: res.window }));
+        setStatus('Voting closed before this was saved.', 'err');
+      } else {
+        setStatus("Couldn't save that ballot. Reload and try again.", 'err');
+      }
+    })
+    .withFailureHandler(() => { $('submit').disabled = false; setStatus("Couldn't reach the server. Try again.", 'err'); })
+    .submitBallot(TOKEN, order);
+};
+
+window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+google.script.run
+  .withSuccessHandler(render)
+  .withFailureHandler(() => showNotice("Couldn't load the ballot.", 'Reload the page to try again.'))
+  .getBallot(TOKEN);
+</script>
+</body>
+</html>

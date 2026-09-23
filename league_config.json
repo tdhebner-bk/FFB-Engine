@@ -1,0 +1,26 @@
+{
+  "_comment": "Config for weekly_report.py. managers: Sleeper user_id -> the short name used in the report, plus every label that name appears under in the Google Form. poll_sources: Google Form response sheets ('sheet', must be link-viewable) or the Apps Script ballot ('secret' names the key in secrets.local.json holding its private export URL; rows carry their own week). 'week' pins a whole sheet to one report week; 'from_week' skips a source for earlier weeks; otherwise ballots are bucketed by timestamp. Any data/polls/week_N.csv is also picked up automatically for week N.",
+  "week1_poll_opens": "2026-09-15",
+  "report_title": "Week {week} 2026 Brooklyn FFB Report",
+  "preseason_title": "Preseason 2026 Brooklyn FFB Report",
+  "tagline": "Always written by A Bozo, never written by AI",
+  "managers": {
+    "1392338811781926912": {"name": "Thomas", "poll_labels": ["Thomas"]},
+    "1264327218952142848": {"name": "Josh",   "poll_labels": ["Josh"]},
+    "647633216160788480":  {"name": "Tyler",  "poll_labels": ["Tyler"]},
+    "1002607743489466368": {"name": "Blaise", "poll_labels": ["Blaise"]},
+    "1391531353698230272": {"name": "Owen",   "poll_labels": ["Owen"]},
+    "755881537492422656":  {"name": "Luke O", "poll_labels": ["Luke O (rep of bkn)", "Luke O"]},
+    "1397649927386996736": {"name": "Ryan",   "poll_labels": ["RyDwy (dogbonr)", "Ryan"]},
+    "758113255997849600":  {"name": "Matt",   "poll_labels": ["Matt"]},
+    "1268003048408481792": {"name": "Kevin",  "poll_labels": ["Kevin"]},
+    "1395881766551572480": {"name": "Pierce", "poll_labels": ["Pierce"]},
+    "1397613556593143808": {"name": "Ben",    "poll_labels": ["Ben"]},
+    "1398039557844279296": {"name": "Luke N", "poll_labels": ["Luke N"]}
+  },
+  "poll_sources": [
+    {"week": 0, "sheet": "1F21LZlPNULX-Fr2qf0AYGcN0rwaqGlyhPjd-4Ze7_B8", "note": "2026 Preseason Rankings (Responses)"},
+    {"week": 1, "sheet": "1PGHajDeUTi2SVaIqWNXOiGDRUyZBnJpgHodf4sjwzMY", "note": "2026 Week 1 Rankings (Responses)"},
+    {"from_week": 3, "secret": "poll_export_url", "note": "BKN FFB Power Poll (Apps Script ballot)"}
+  ]
+}

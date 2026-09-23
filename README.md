@@ -21,7 +21,8 @@ line in that file).
 
 ## Requirements
 
-Python 3.8+, standard library only — no `pip install` needed.
+Python 3.8+, standard library only — no `pip install` needed. The one exception is the
+optional logo rank chart in the weekly report, which uses matplotlib + Pillow.
 
 ## Usage
 
@@ -34,6 +35,33 @@ python3 ffb_engine.py --sims 20000   # tighter Monte Carlo season simulation
 
 Re-run `build_board_data.py` any time during the season to pull fresh numbers —
 there's no caching or scheduling built in, just run it before you check lineups.
+
+## Weekly report (power poll + rankings roundup)
+
+`weekly_report.py` builds everything the weekly "Brooklyn FFB Report" needs, so
+the only manual step left is writing the blurbs:
+
+```bash
+python3 weekly_report.py --refresh-bundle   # report for the week that just finished
+python3 weekly_report.py --week 2           # a specific report week (0 = preseason)
+```
+
+It pulls the power-poll ballots (Borda count → "Bozo Ranking"; from week 3 on these come
+from the drag-to-rank ballot in [`poll/`](poll/SETUP.md), a Google Apps Script web app), Sleeper
+scores/standings, the engine's power rankings, next-week spreads and Monte Carlo
+playoff odds, and FantasyPros' League Analyzer power rankings, then writes:
+
+- `reports/week_N_draft.html`: a Google-Doc-ready draft (the rankings table, each
+  team's header and spread line, and a shaded box of stats per team to write from)
+- `reports/week_N_chart.png`: the Bozo Ranking week over week with team logos, which goes
+  under the rankings table (needs `pip install matplotlib pillow`, optional)
+- `reports/dashboard.html`: season-to-date rank trends, playoff odds, ballot heatmap
+- `data/history/week_N.json`: the snapshot next week's report compares against
+
+Manager names and poll sheets live in `league_config.json`. FantasyPros needs your
+login, so that step runs through Claude in Chrome; see
+[WEEKLY_RUNBOOK.md](WEEKLY_RUNBOOK.md) for the full weekly flow. `data/` and
+`reports/` are gitignored (ballots and draft trash talk stay local).
 
 ## Where the rankings come from
 
@@ -86,7 +114,13 @@ not secrets.
 ## Files
 
 - `build_board_data.py` — live rankings fetch + blend, writes `bundle.json`
-- `ffb_engine.py` — projections, optimal lineups, matchups, Monte Carlo standings
+- `ffb_engine.py` — projections, optimal lineups, matchups, Monte Carlo standings (completed weeks locked to real results)
+- `weekly_report.py` — weekly report builder (poll + Sleeper + engine + FantasyPros → draft doc)
+- `dashboard.py` — season-to-date dashboard from the weekly snapshots
+- `rank_chart.py` — week-over-week rank chart with Sleeper team logos (matplotlib + Pillow)
+- `league_config.json` — manager names, poll-form label aliases, poll response sheets
+- `WEEKLY_RUNBOOK.md` — the weekly flow, including the Chrome steps
+- `poll/` — the weekly drag-to-rank ballot (Google Apps Script: `Code.gs`, `Ballot.html`, `SETUP.md`)
 - `bundle.json` — generated output, gitignored (regenerate any time)
 - `espn_winrates_2025.json` — cached ESPN team win-rate snapshot (see above)
 - `secrets.example.json` — template for the optional PFF token; copy to `secrets.local.json`
