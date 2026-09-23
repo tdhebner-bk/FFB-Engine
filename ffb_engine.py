@@ -315,7 +315,7 @@ def week_matchups(teams, matchups, SCHED, cfg, week, live_scores=None, game_stat
 # SECTION 8 — SEASON PROJECTIONS
 # expected_wins(): deterministic — sum each week's win probability. This is the
 #   "projected record" (e.g. 8.6-5.4), NOT a simulation. Weeks already played
-#   count as the real W/L (see fetch_results).
+#   count as the real W/L (see fetch_results / last_final_week).
 # monte_carlo(): the simulation — replay the real schedule N times, adding a
 #   random gaussian shock to each team's weekly projection, then tally how often
 #   each team makes the top-6 (playoff%) and wins it all (title%). Weeks already
@@ -331,6 +331,16 @@ def fetch_results(lid, through_week):
                for e in get_json(API+"league/"+lid+"/matchups/"+str(w))}
         if any(pts.values()): out[w] = pts
     return out
+
+def last_final_week(season, cur):
+    """Last week whose results are final. Normally cur-1, but Sleeper's current week
+    doesn't advance until a day or two after Monday night — once every NFL game in
+    week `cur` is complete, that week is final too and gets locked."""
+    try:
+        status = fetch_game_status(season, cur)
+    except Exception:
+        return cur-1
+    return cur if status and all(s == "complete" for s in status.values()) else cur-1
 
 def expected_wins(teams, matchups, SCHED, results=None):
     results = results or {}
@@ -437,7 +447,7 @@ def main():
     # --- projected final standings via Monte Carlo ---
     print(f"\n=== PROJECTED STANDINGS (Monte Carlo, {a.sims} seasons) ===")
     try:
-        results = fetch_results(cfg["leagueId"], max(0, cur-1))   # completed weeks count as played
+        results = fetch_results(cfg["leagueId"], max(0, last_final_week(cfg["season"], cur)))   # completed weeks count as played
     except Exception:
         results = {}
     ew = expected_wins(teams, matchups, SCHED, results)

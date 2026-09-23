@@ -356,7 +356,7 @@ const SLOT_LABEL = {QB:'QB',RB:'RB',WR:'WR',TE:'TE',FLEX:'FLEX',SF:'SFLX',DEF:'D
 let STATE = {
   leagueId: B.CFG.leagueId, league:null, users:[], rosters:[], matchups:{}, // week->entries
   teams:[], ridTeam:{}, myRid:null, week:1, curWeek:1, boardSort:{k:'tier',dir:1}, boardPos:'ALL', boardSearch:'',
-  ownerByPid:{}, powerCache:null, mc:null, share:false, dashScope:'season', dashExpanded:new Set()
+  ownerByPid:{}, powerCache:null, mc:null, nflWeek:1, share:false, dashScope:'season', dashExpanded:new Set()
 };
 
 /* ---------- data fetch ---------- */
@@ -380,7 +380,8 @@ async function loadAll(lid){
   setStatus('load','Connecting…'); $('#boot').style.display='block'; $('#app').style.display='none';
   try{
     const st = await api('state/nfl').catch(()=>({week:1}));
-    STATE.curWeek = Math.min(Math.max(st.display_week||st.week||1,1),B.CFG.regWeeks);
+    STATE.nflWeek = Math.max(st.display_week||st.week||1,1);   // unclamped: weeks before this are final
+    STATE.curWeek = Math.min(STATE.nflWeek,B.CFG.regWeeks);
     const [league,users,rosters] = await Promise.all([
       api('league/'+lid), api('league/'+lid+'/users'), api('league/'+lid+'/rosters')
     ]);
@@ -660,8 +661,10 @@ function renderStandings(){
   const v=$('#v-standings'); v.innerHTML='';
   const proj=projectStandings();
   const head=el('div','card');
+  const done=Object.keys(completedResults()).length;
   head.innerHTML='<h2>Projected final standings</h2><div class="note">Expected wins across weeks 1–'+B.CFG.regWeeks+
-    ' from weekly projections + win probabilities. Playoff odds via 4,000-season Monte Carlo. Top '+B.CFG.playoffTeams+' make playoffs.</div>';
+    (done ? ': actual results for the '+done+' completed week'+(done>1?'s':'')+', then weekly projections + win probabilities.' : ' from weekly projections + win probabilities.')+
+    ' Playoff odds via 4,000-season Monte Carlo (completed weeks locked to real scores). Top '+B.CFG.playoffTeams+' make playoffs.</div>';
   v.appendChild(head);
   const c=el('div','card');
   const tb=el('table'); tb.innerHTML='<thead><tr><th class="num">Seed</th><th>Team</th><th class="num">Proj. Record</th><th class="num">Exp. Wins</th><th class="num">Playoff %</th><th class="num">Title %</th><th>Odds</th></tr></thead>';
@@ -682,22 +685,47 @@ function renderStandings(){
   v.appendChild(c);
 }
 
+// Final scores for every completed week: {week: {roster_id: points}} — mirrors
+// ffb_engine.fetch_results(). Completed = weeks before Sleeper's current week,
+// plus the current week itself once every NFL game in it is final (Sleeper's week
+// lags Monday night by a day or two) — mirrors ffb_engine.last_final_week().
+// A week with no points at all (fetch failed / not scored) is left out.
+function lastFinalWeek(){
+  const cur=STATE.nflWeek, st=Object.values(gameStatusForWeek(cur));
+  return (st.length && st.every(s=>s==='complete')) ? cur : cur-1;
+}
+function completedResults(){
+  const out={}, through=Math.min(lastFinalWeek(),B.CFG.regWeeks);
+  for(let w=1;w<=through;w++){
+    const pts={}; (STATE.matchups[w]||[]).forEach(e=>pts[e.roster_id]=e.points||0);
+    if(Object.values(pts).some(v=>v)) out[w]=pts;
+  }
+  return out;
+}
 function projectStandings(){
-  // expected wins
+  // expected wins — weeks already played count as the real W/L
+  const results=completedResults();
   const ew={}; STATE.teams.forEach(t=>ew[t.rid]=0);
   const weekProj={};
   for(let w=1;w<=B.CFG.regWeeks;w++){
+    if(results[w]){
+      weekMatchups(w).forEach(([a,b])=>{ if((results[w][a]||0)>=(results[w][b]||0)) ew[a]++; else ew[b]++; });
+      continue;
+    }
     weekProj[w]={}; STATE.teams.forEach(t=>weekProj[w][t.rid]=projFor(t.rid,w).total);
     weekMatchups(w).forEach(([a,b])=>{ const p=E.winProb(weekProj[w][a]-weekProj[w][b]); ew[a]+=p; ew[b]+=(1-p); });
   }
   // Monte Carlo playoff + title odds
-  if(!STATE.mc) STATE.mc = monteCarlo(weekProj);
+  if(!STATE.mc) STATE.mc = monteCarlo(weekProj, results);
   const mc=STATE.mc;
   return STATE.teams.map(t=>({rid:t.rid,name:t.name,w:ew[t.rid],
       playoffPct:mc.playoff[t.rid]*100, titlePct:mc.title[t.rid]*100}))
     .sort((a,b)=> b.playoffPct-a.playoffPct || b.w-a.w);
 }
-function monteCarlo(weekProj){
+// results: {week: {roster_id: final points}} from completedResults() — those weeks
+// are locked to what actually happened; only future weeks are simulated.
+function monteCarlo(weekProj, results){
+  results=results||{};
   const N=4000, teams=STATE.teams.map(t=>t.rid);
   const playoff={},title={}; teams.forEach(r=>{playoff[r]=0;title[r]=0;});
   const wmk={}; for(let w=1;w<=B.CFG.regWeeks;w++) wmk[w]=weekMatchups(w);
@@ -706,8 +734,10 @@ function monteCarlo(weekProj){
   for(let s=0;s<N;s++){
     const wins={},pf={}; teams.forEach(r=>{wins[r]=0;pf[r]=0;});
     for(let w=1;w<=B.CFG.regWeeks;w++){
+      const res=results[w];
       wmk[w].forEach(([a,b])=>{
-        const sa=weekProj[w][a]+randn()*SD, sb=weekProj[w][b]+randn()*SD;
+        const sa = res ? (res[a]||0) : weekProj[w][a]+randn()*SD;   // played -> real score, no noise
+        const sb = res ? (res[b]||0) : weekProj[w][b]+randn()*SD;
         pf[a]+=sa; pf[b]+=sb;
         if(sa>=sb) wins[a]++; else wins[b]++;
       });
